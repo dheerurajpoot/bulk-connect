@@ -1,39 +1,61 @@
-import { type NextRequest, NextResponse } from "next/server"
-import { createUser, findUserByEmail } from "@/lib/auth"
+import { NextRequest, NextResponse } from "next/server";
+import bcryptjs from "bcryptjs";
+import { User } from "@/models/user";
+import { connectDb } from "@/lib/db";
+import { sendMail } from "@/lib/mails";
 
 export async function POST(request: NextRequest) {
-  try {
-    const { name, email, password } = await request.json()
+	try {
+		await connectDb();
+		const { name, email, password } = await request.json();
 
-    if (!name || !email || !password) {
-      return NextResponse.json({ error: "Name, email, and password are required" }, { status: 400 })
-    }
+		if (!name || !email || !password) {
+			return NextResponse.json(
+				{ message: "All fields are required" },
+				{ status: 400 }
+			);
+		}
 
-    // Check if user already exists
-    const existingUser = findUserByEmail(email)
-    if (existingUser) {
-      return NextResponse.json({ error: "User with this email already exists" }, { status: 409 })
-    }
+		// Check if user already exists
+		const existingUser = await User.findOne({ email });
 
-    // Validate password strength
-    if (password.length < 8) {
-      return NextResponse.json({ error: "Password must be at least 8 characters long" }, { status: 400 })
-    }
+		if (existingUser) {
+			return NextResponse.json(
+				{ message: "User already exists with this email" },
+				{ status: 400 }
+			);
+		}
 
-    const user = await createUser({ name, email, password })
+		// Hash password
+		const salt = await bcryptjs.genSalt(10);
+		const hashedPassword = await bcryptjs.hash(password, salt);
 
-    return NextResponse.json({
-      success: true,
-      message: "Account created successfully",
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        plan: user.plan,
-        isVerified: user.isVerified,
-      },
-    })
-  } catch (error) {
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
+		// Create new user
+		const user = new User({
+			name,
+			email,
+			password: hashedPassword,
+			isVerified: false,
+		});
+
+		await user.save();
+
+		// Send verification email
+		await sendMail({
+			email: user.email,
+			emailType: "VERIFY",
+			userId: user._id,
+		});
+
+		return NextResponse.json({
+			message: "Please check your email to verify your account",
+			success: true,
+		});
+	} catch (error: unknown) {
+		console.error("Signup error:", error);
+		return NextResponse.json(
+			{ message: "An error occurred while signing up" },
+			{ status: 500 }
+		);
+	}
 }

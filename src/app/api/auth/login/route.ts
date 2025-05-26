@@ -1,38 +1,85 @@
-import { type NextRequest, NextResponse } from "next/server"
-import { findUserByEmail, verifyPassword, generateToken } from "@/lib/auth"
+import { NextRequest, NextResponse } from "next/server";
+import bcryptjs from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { connectDb } from "@/lib/db";
+import { User } from "@/models/user";
 
 export async function POST(request: NextRequest) {
-  try {
-    const { email, password } = await request.json()
+	try {
+		await connectDb();
+		const { email, password } = await request.json();
 
-    if (!email || !password) {
-      return NextResponse.json({ error: "Email and password are required" }, { status: 400 })
-    }
+		if (!email || !password) {
+			return NextResponse.json(
+				{ message: "Email and password are required" },
+				{ status: 400 }
+			);
+		}
 
-    const user = findUserByEmail(email)
-    if (!user) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 })
-    }
+		const user = await User.findOne({ email });
 
-    const isValidPassword = await verifyPassword(password, user.password)
-    if (!isValidPassword) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 })
-    }
+		if (!user) {
+			return NextResponse.json(
+				{ message: "Invalid email or password" },
+				{ status: 400 }
+			);
+		}
 
-    const token = generateToken(user.id)
+		// Check if email is verified
+		if (!user.isVerified) {
+			return NextResponse.json(
+				{
+					message: "Please verify your email before logging in",
+					success: false,
+				},
+				{ status: 400 }
+			);
+		}
 
-    return NextResponse.json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        plan: user.plan,
-        isVerified: user.isVerified,
-      },
-    })
-  } catch (error) {
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
+		const validPassword = await bcryptjs.compare(password, user.password);
+
+		if (!validPassword) {
+			return NextResponse.json(
+				{ message: "Invalid email or password" },
+				{ status: 400 }
+			);
+		}
+
+		const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET!, {
+			expiresIn: "30d",
+		});
+
+		const response = NextResponse.json({
+			message: "Login successful",
+			success: true,
+			user: {
+				_id: user._id,
+				name: user.name,
+				email: user.email,
+				role: user.role,
+				isBlocked: user.isBlocked,
+			},
+		});
+
+		response.cookies.set("token", token, {
+			httpOnly: true,
+			secure: process.env.NODE_ENV === "production",
+			sameSite: "strict",
+			maxAge: 30 * 24 * 60 * 60,
+		});
+		response.cookies.set("user_role", user.role, {
+			httpOnly: true,
+			secure: process.env.NODE_ENV === "production",
+			sameSite: "strict",
+			maxAge: 30 * 24 * 60 * 60,
+		});
+
+		return response;
+	} catch (error: unknown) {
+		console.error("Login error:", error);
+		return NextResponse.json(
+			{ message: "An error occurred while logging in" },
+			{ status: 500 }
+		);
+	}
 }
